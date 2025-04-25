@@ -1,1 +1,1 @@
-# mindbox-test-task
+# Выполнение тестового задания для Mindbox 
