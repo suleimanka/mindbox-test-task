@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  labels:
+    app: webapp
+spec:
+  # Начать с 1 реплики для минимального использования ресурсов ночью
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webapp
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        image:         # Образ веб-приложения с конкретным тегом версии для детерминированного деплоя
+        ports:
+        - containerPort: 80
+        # Резерв минимальных ресурсов, допускается увеличение до лимитов
+        resources:
+          requests:
+            cpu: "200m"         # Установочный режим ~0.1 CPU, запрос чуть больше для покрытия всплесков
+            memory: "128Mi"     # Потребление памяти в steady-state
+          limits:
+            cpu: "1"            # Допускается до 1 CPU при инициализации или всплесках
+            memory: "256Mi"     # Запас памяти
+        # Проверки состояния
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 15   # Дать приложению время на запуск
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30   # Проверка после полного старта
+          periodSeconds: 20
+          failureThreshold: 3
+        # Startup-проверка для более длительной инициализации (5–10 сек) без перезапуска контейнера
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 80
+          failureThreshold: 10     # Повтор до ~50 сек
+          periodSeconds: 5
+      affinity:
+        podAntiAffinity:
+          # Распределять поды по разным зонам для высокой доступности
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: webapp
+              topologyKey: topology.kubernetes.io/zone
+---
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: webapp-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: webapp
+  minReplicas: 1   # Всегда минимум одна реплика ночью
+  maxReplicas: 4   # 4 пода справляются с пиковой нагрузкой согласно нагрузочному тесту
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50   # Масштабирование при средней загрузке CPU >50%
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: webapp-pdb
+spec:
+  minAvailable: 3     # Обеспечить доступность минимум 3 подов
+  selector:
+    matchLabels:
+      app: webapp
